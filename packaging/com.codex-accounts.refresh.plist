@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Daily "codex-accounts refresh" LaunchAgent template.
+
+  scripts/install-launchagent.sh substitutes the @@…@@ placeholders below
+  and installs the result into ~/Library/LaunchAgents/.
+
+  Manual install:
+    1. Replace @@CODEX_ACCOUNTS_BIN@@ with the absolute path printed by
+         which codex-accounts
+    2. cp packaging/com.codex-accounts.refresh.plist \
+         ~/Library/LaunchAgents/
+    3. launchctl bootstrap gui/$(id -u) \
+         ~/Library/LaunchAgents/com.codex-accounts.refresh.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.codex-accounts.refresh</string>
+
+    <!--
+      Daily at 09:00 local time. If the machine is asleep or off at that
+      moment, launchd catches up at the next wake / boot (unlike cron,
+      which skips missed runs).
+    -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>   <integer>9</integer>
+        <key>Minute</key> <integer>0</integer>
+    </dict>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-l</string>
+        <string>-c</string>
+        <!-- 10-minute gap between accounts to reduce abuse-system risk. -->
+        <string>@@CODEX_ACCOUNTS_BIN@@ refresh --delay 600</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/codex-accounts-refresh.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/codex-accounts-refresh.log</string>
+</dict>
+</plist>

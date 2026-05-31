@@ -1,0 +1,84 @@
+#compdef codex-accounts
+# zsh completion for codex-accounts.
+#
+# Install:
+#   mkdir -p ~/.zsh/completions
+#   cp _codex-accounts ~/.zsh/completions/
+#   # In ~/.zshrc:
+#   #   fpath=(~/.zsh/completions $fpath)
+#   #   autoload -Uz compinit && compinit
+
+_codex_switch_accounts() {
+  local home="${CODEX_SWITCH_HOME:-$HOME/.codex-accounts}"
+  local -a names
+  if [[ -d "$home" ]]; then
+    names=("${(@f)$(/bin/ls -1 "$home" 2>/dev/null | grep -v '^\.')}")
+    _values 'account' $names
+  fi
+}
+
+_codex_switch() {
+  local context state state_descr line
+  typeset -A opt_args
+
+  local -a commands
+  commands=(
+    'list:list saved accounts'
+    'current:print the active account name'
+    'info:show account details'
+    'save:snapshot live Codex state under a name'
+    'use:activate a saved account'
+    'init:create an empty snapshot directory'
+    'note:set a free-text note on an account'
+    'rename:rename an account snapshot'
+    'delete:delete an account snapshot'
+    'stats:local token usage from state_*.sqlite'
+    'quota:live quota via private API (requires network)'
+    'refresh:open the 5h window on every account'
+    'doctor:print environment diagnostics'
+  )
+
+  _arguments -C \
+    '1: :->cmd' \
+    '*::arg:->args'
+
+  case $state in
+    cmd)
+      _describe -t commands 'codex-accounts command' commands
+      ;;
+    args)
+      case $line[1] in
+        list)
+          _arguments '-a[fetch live quota]' '--all[fetch live quota]'
+          ;;
+        info|stats|quota)
+          _codex_switch_accounts
+          ;;
+        save)
+          _arguments '--auth-only[only snapshot auth.json]'
+          [[ -z $line[2] ]] && _codex_switch_accounts
+          ;;
+        use)
+          _arguments \
+            '--no-share-sessions[fully isolate session DBs]' \
+            '-f[skip the codex-running check]' \
+            '--force[skip the codex-running check]'
+          [[ -z $line[2] ]] && _codex_switch_accounts
+          ;;
+        init|note|delete)
+          [[ -z $line[2] ]] && _codex_switch_accounts
+          ;;
+        rename)
+          _codex_switch_accounts
+          ;;
+        refresh)
+          _arguments \
+            '--delay[seconds between accounts]:seconds:' \
+            '--dry-run[show plan without sending]'
+          ;;
+      esac
+      ;;
+  esac
+}
+
+_codex_switch "$@"

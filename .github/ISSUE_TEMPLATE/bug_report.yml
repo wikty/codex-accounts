@@ -1,0 +1,64 @@
+name: Bug report
+description: Something isn't working as documented.
+title: "[bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please fill in as much
+        detail as you can — the doctor output in particular is very helpful.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One sentence describing what went wrong.
+      placeholder: "`codex-accounts use foo` deletes auth.json but does not load the snapshot."
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      description: Minimal commands that reproduce the issue.
+      render: shell
+      placeholder: |
+        codex-accounts save acct-a
+        codex-accounts use acct-b
+        # …observe missing auth.json
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs. actual behaviour
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: "`codex-accounts doctor` output"
+      description: Run `codex-accounts doctor` and paste the entire output here.
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: codex_version
+    attributes:
+      label: Codex desktop app version
+      description: From Codex → About, or the version stamp in `~/.codex/version.json`.
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Logs, screenshots, hunches — anything that might help.
+    validations:
+      required: false
