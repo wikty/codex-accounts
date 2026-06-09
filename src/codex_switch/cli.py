@@ -6,6 +6,7 @@ import argparse
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date, datetime, timezone
 
 from codex_switch import __version__, accounts, api, config, stats, utils
 from codex_switch.accounts import Account, SwapMode
@@ -60,6 +61,8 @@ def cmd_list(args: argparse.Namespace) -> int:
 
     current = accounts.current_name()
     auth_map = {acct.name: accounts.read_auth(acct.name) for acct in rows}
+    meta_map = {acct.name: acct.read_meta() for acct in rows}
+    show_renews = any(m.get("renews_at") for m in meta_map.values())
     quota_map: dict[str, object] = {}
 
     if show_quota:
@@ -79,38 +82,51 @@ def cmd_list(args: argparse.Namespace) -> int:
                     except api.ApiError as e:
                         quota_map[name] = e
 
-    max_name = max(len(r.name) for r in rows)
-    max_email = max(
-        len(auth_map[r.name].email if auth_map[r.name] else "(no auth.json)") for r in rows
-    )
+    # Column widths factor in both the header label and the data values,
+    # measured in terminal display cells (CJK chars count as 2).
+    def _col_width(values: list[str], header: str) -> int:
+        return max(utils.display_width(header), *(utils.display_width(v) for v in values))
+
+    name_values = [r.name for r in rows]
+    email_values = [
+        (auth_map[r.name].email if auth_map[r.name] else "(no auth.json)") for r in rows
+    ]
+    max_name = _col_width(name_values, "name")
+    max_email = _col_width(email_values, "email")
 
     utils.echo(f"\nAccounts ({config.accounts_home()}):\n")
     header_cols = [
         "  ",
-        "name".ljust(max_name),
-        "email".ljust(max_email),
+        utils.display_ljust("name", max_name),
+        utils.display_ljust("email", max_email),
         f"{'plan':<10}",
         f"{'token':<12}",
-        "last used",
+        f"{'last used':<10}",
     ]
+    if show_renews:
+        header_cols.append(f"{'renews':<7}")
     if show_quota:
-        header_cols.append("5h / weekly")
+        header_cols.append(f"{'5h':<14}")
+        header_cols.append(f"{'weekly':<18}")
     header = "  ".join(header_cols)
     utils.echo(utils.dim(header))
-    utils.echo(utils.dim("  " + "-" * (len(header) - 2)))
+    utils.echo(utils.dim("  " + "-" * (utils.display_width(header) - 2)))
 
     for acct in rows:
         info = auth_map[acct.name]
-        meta = acct.read_meta()
+        meta = meta_map[acct.name]
         is_cur = acct.name == current
         marker = "▶" if is_cur else " "
-        email = (info.email if info else "(no auth.json)").ljust(max_email)
+        name_cell = utils.display_ljust(acct.name, max_name)
+        email_cell = utils.display_ljust(info.email if info else "(no auth.json)", max_email)
         plan = utils.fmt_plan(info.plan if info else "")
         token = utils.fmt_token_status(info)
         last = utils.fmt_last_used(meta.get("last_used_at", ""))
-        line = f"  {marker} {acct.name.ljust(max_name)}  {email}  {plan:<10}  {token:<12}  {last}"
+        line = f"  {marker} {name_cell}  {email_cell}  {plan:<10}  {token:<12}  {last:<10}"
+        if show_renews:
+            line += "  " + _renews_cell(meta.get("renews_at", ""))
         if show_quota:
-            line += "  " + _quota_cell(quota_map.get(acct.name))
+            line += "  " + _quota_cell(quota_map.get(acct.name), info)
         if is_cur:
             line += "  " + utils.bold("← current")
         notes = meta.get("notes")
@@ -121,23 +137,42 @@ def cmd_list(args: argparse.Namespace) -> int:
     return 0
 
 
-def _quota_cell(value: object) -> str:
+def _renews_cell(iso_date: str, width: int = 7) -> str:
+    text = utils.fmt_renews(iso_date)
+    padded = utils.display_ljust(text, width)
+    if text == "today" or text.endswith("⚠"):
+        return utils.yellow(padded)
+    return padded
+
+
+def _quota_cell(value: object, info: utils.AuthInfo | None) -> str:
     if value is None:
+        if info is None:
+            return utils.dim("(no auth)")
+        if info.is_expired:
+            return utils.dim("(token expired)")
+        if not info.access_token:
+            return utils.dim("(no token)")
         return utils.dim("(no live quota)")
     if isinstance(value, api.ApiError):
         return utils.red(f"err: {value}"[:40])
     q: api.Quota = value  # type: ignore[assignment]
-    pw = q.primary
-    sw = q.secondary
 
-    def short(window: api.Window | None) -> str:
+    def short(window: api.Window | None, *, absolute: bool) -> str:
         if window is None:
             return "—"
-        reset = utils.fmt_duration(window.reset_after_seconds)
-        return f"{int(window.used_percent):3d}% / ↺{reset}"
+        pct = int(window.used_percent)
+        if absolute and window.reset_at:
+            dt = datetime.fromtimestamp(window.reset_at, tz=timezone.utc).astimezone()
+            reset = dt.strftime("%m-%d %H:%M")
+        else:
+            reset = "↺" + utils.fmt_duration(window.reset_after_seconds)
+        return f"{pct:3d}% / {reset}"
 
     suffix = " ⛔" if not q.allowed or q.limit_reached else ""
-    return f"{short(pw):<14}  {short(sw):<14}{suffix}"
+    primary = short(q.primary, absolute=False)
+    secondary = short(q.secondary, absolute=True)
+    return f"{primary:<14}  {secondary:<18}{suffix}"
 
 
 def cmd_current(_args: argparse.Namespace) -> int:
@@ -169,6 +204,17 @@ def cmd_info(args: argparse.Namespace) -> int:
             utils.echo(f"  account   …{info.account_id[-12:]}")
     last = meta.get("last_used_at", "")
     utils.echo(f"  last used {utils.fmt_last_used(last)}")
+    renews = meta.get("renews_at", "")
+    if renews:
+        try:
+            anchor = utils.parse_iso_date(renews)
+            today = date.today()
+            nxt = utils.next_renewal_date(anchor, today)
+            diff = (nxt - today).days
+            tail = "(today)" if diff == 0 else f"(in {diff}d)"
+            utils.echo(f"  renews    {nxt.isoformat()}  {tail}")
+        except ValueError:
+            utils.echo(f"  renews    {renews}")
     notes = meta.get("notes", "")
     utils.echo(f"  notes     {notes or '(none)'}")
     utils.echo("")
@@ -236,6 +282,55 @@ def cmd_note(args: argparse.Namespace) -> int:
     except (FileNotFoundError, ValueError) as e:
         utils.die(str(e))
     utils.ok(f"note set on '{args.name}'")
+    return 0
+
+
+def cmd_billing(args: argparse.Namespace) -> int:
+    name = args.name
+    try:
+        acct = accounts.get_account(name, must_exist=True)
+    except (FileNotFoundError, ValueError) as e:
+        utils.die(str(e))
+
+    if args.clear:
+        accounts.set_billing(name, None)
+        utils.ok(f"{name}: renewal date cleared")
+        return 0
+
+    if args.date:
+        try:
+            anchor = utils.parse_iso_date(args.date)
+        except ValueError as e:
+            utils.die(str(e))
+        accounts.set_billing(name, anchor.isoformat())
+        today = date.today()
+        nxt = utils.next_renewal_date(anchor, today)
+        diff = (nxt - today).days
+        when = "today" if diff == 0 else f"in {diff}d"
+        utils.ok(f"{name}: renews {nxt.isoformat()} ({when})")
+        if nxt != anchor:
+            utils.info(
+                f"        anchor {anchor.isoformat()} auto-rolled monthly to {nxt.isoformat()}"
+            )
+        return 0
+
+    # No date and no --clear → show current
+    cur = acct.read_meta().get("renews_at")
+    if not cur:
+        utils.echo(f"{name}: no renewal date set")
+        utils.echo(f"       set with: {PROG} billing {name} YYYY-MM-DD")
+        return 0
+    try:
+        anchor = utils.parse_iso_date(cur)
+        today = date.today()
+        nxt = utils.next_renewal_date(anchor, today)
+        diff = (nxt - today).days
+        when = "today" if diff == 0 else f"in {diff}d"
+        utils.echo(f"{name}: renews {nxt.isoformat()} ({when})")
+        if nxt != anchor:
+            utils.echo(utils.dim(f"       (monthly cycle, anchor {anchor.isoformat()})"))
+    except ValueError:
+        utils.echo(f"{name}: renews {cur}  (unparseable; clear and re-set)")
     return 0
 
 
@@ -477,6 +572,24 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("name")
     sp.add_argument("text")
     sp.set_defaults(func=cmd_note)
+
+    sp = sub.add_parser(
+        "billing",
+        help="set/show the monthly billing date (auto-rolls forward)",
+        description=(
+            "Store the renewal date for an account. Treated as the anchor of "
+            "a monthly cycle: the stored value is preserved, and display auto-"
+            "rolls forward to the next occurrence (clamped to month length)."
+        ),
+    )
+    sp.add_argument("name")
+    sp.add_argument(
+        "date",
+        nargs="?",
+        help="anchor date as YYYY-MM-DD (any past or future date that matches the cycle)",
+    )
+    sp.add_argument("--clear", action="store_true", help="remove the stored renewal date")
+    sp.set_defaults(func=cmd_billing)
 
     sp = sub.add_parser("rename", help="rename an account")
     sp.add_argument("old")

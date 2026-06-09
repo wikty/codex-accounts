@@ -3,11 +3,37 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 
 import pytest
 
 from codex_switch import utils
 from tests.conftest import _make_jwt
+
+
+@pytest.mark.parametrize(
+    "anchor,today,expected",
+    [
+        # Anchor already in the future → returned unchanged.
+        (date(2026, 7, 15), date(2026, 6, 9), date(2026, 7, 15)),
+        # Anchor today → unchanged.
+        (date(2026, 6, 9), date(2026, 6, 9), date(2026, 6, 9)),
+        # One month past → next month, same day.
+        (date(2026, 5, 9), date(2026, 6, 9), date(2026, 6, 9)),
+        # Several months past → rolls to nearest future occurrence.
+        (date(2026, 1, 15), date(2026, 6, 9), date(2026, 6, 15)),
+        # Day-of-month clamped to month length: Jan-31 anchor → Feb-28 in non-leap.
+        (date(2025, 1, 31), date(2025, 2, 15), date(2025, 2, 28)),
+        # After clamp, next month restores the original day.
+        (date(2025, 1, 31), date(2025, 3, 1), date(2025, 3, 31)),
+        # Leap year: Jan-31 anchor → Feb-29 in 2024.
+        (date(2024, 1, 31), date(2024, 2, 15), date(2024, 2, 29)),
+        # Crosses year boundary.
+        (date(2025, 12, 20), date(2026, 1, 5), date(2026, 1, 20)),
+    ],
+)
+def test_next_renewal_date(anchor, today, expected):
+    assert utils.next_renewal_date(anchor, today) == expected
 
 
 @pytest.mark.parametrize(

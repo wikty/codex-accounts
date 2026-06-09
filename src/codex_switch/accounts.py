@@ -256,6 +256,24 @@ def set_note(name: str, text: str) -> None:
     account.update_meta(notes=text)
 
 
+def set_billing(name: str, renews_at: str | None) -> None:
+    """Store (or clear) the next billing/renewal date for an account.
+
+    ``renews_at`` should be a ``YYYY-MM-DD`` string or ``None`` to clear.
+    Caller is expected to have validated the date format.
+    """
+    account = get_account(name, must_exist=True)
+    meta = account.read_meta()
+    if renews_at is None:
+        meta.pop("renews_at", None)
+    else:
+        meta["renews_at"] = renews_at
+    utils.ensure_private_dir(account.path)
+    with account.meta_file.open("w", encoding="utf-8") as fh:
+        json.dump(meta, fh, ensure_ascii=False, indent=2)
+        fh.write("\n")
+
+
 # ---------------------------------------------------------------------------
 # Misc
 # ---------------------------------------------------------------------------

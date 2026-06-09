@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import calendar
 import contextlib
 import json
 import os
@@ -10,8 +11,9 @@ import re
 import shutil
 import subprocess
 import sys
+import unicodedata
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import NoReturn
 
@@ -179,6 +181,75 @@ def fmt_last_used(ts: str) -> str:
     if diff < 604_800:
         return f"{int(diff // 86400)}d ago"
     return dt.strftime("%Y-%m-%d")
+
+
+def display_width(s: str) -> int:
+    """Cell width of ``s`` in a fixed-width terminal.
+
+    East-Asian Wide / Fullwidth characters count as 2 cells, everything else
+    as 1. Pass un-colored strings — ANSI escapes are not stripped.
+    """
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in s)
+
+
+def display_ljust(s: str, width: int) -> str:
+    """Like ``str.ljust`` but using terminal display width (CJK-safe)."""
+    pad = width - display_width(s)
+    return s + " " * pad if pad > 0 else s
+
+
+def parse_iso_date(s: str) -> date:
+    """Parse a ``YYYY-MM-DD`` date string. Raises ``ValueError`` on bad input."""
+    try:
+        return date.fromisoformat(s)
+    except ValueError as e:
+        raise ValueError(f"expected YYYY-MM-DD, got {s!r}") from e
+
+
+def next_renewal_date(anchor: date, today: date | None = None) -> date:
+    """Next monthly renewal on/after ``today``, starting from ``anchor``.
+
+    The anchor's day-of-month is preserved across all months, clamped to each
+    month's last day (Stripe-style: a Jan-31 anchor renews on Feb-28, then
+    Mar-31, Apr-30, …). If ``anchor`` is already on or after ``today`` it is
+    returned unchanged.
+    """
+    today = today or date.today()
+    if anchor >= today:
+        return anchor
+    y, m, day = anchor.year, anchor.month, anchor.day
+    while True:
+        m += 1
+        if m > 12:
+            m = 1
+            y += 1
+        d = min(day, calendar.monthrange(y, m)[1])
+        cand = date(y, m, d)
+        if cand >= today:
+            return cand
+
+
+def fmt_renews(iso_date: str, today: date | None = None) -> str:
+    """Short tabular rendering of the next monthly renewal.
+
+    Auto-rolls the stored anchor forward month-by-month. Returns one of:
+    ``"—"`` (empty), ``"today"``, ``"3d"``, ``"3d ⚠"`` (≤7d), or the raw
+    value if it can't be parsed.
+    """
+    if not iso_date:
+        return "—"
+    try:
+        anchor = date.fromisoformat(iso_date)
+    except ValueError:
+        return iso_date[:10]
+    today = today or date.today()
+    nxt = next_renewal_date(anchor, today)
+    diff = (nxt - today).days
+    if diff == 0:
+        return "today"
+    if diff <= 7:
+        return f"{diff}d ⚠"
+    return f"{diff}d"
 
 
 def fmt_duration(seconds: float) -> str:
