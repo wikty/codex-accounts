@@ -19,7 +19,7 @@ _codex_switch_complete() {
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-  local commands="list current info save use init note rename delete stats quota refresh doctor --help --version"
+  local commands="list current info save use init note rename delete stats quota refresh app status doctor --help --version"
 
   if [[ $COMP_CWORD -eq 1 ]]; then
     COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
@@ -50,6 +50,42 @@ _codex_switch_complete() {
       ;;
     refresh)
       COMPREPLY=( $(compgen -W "--delay --dry-run" -- "$cur") )
+      ;;
+    status)
+      COMPREPLY=( $(compgen -W "--since --json" -- "$cur") )
+      ;;
+    app)
+      if [[ $COMP_CWORD -eq 2 ]]; then
+        COMPREPLY=( $(compgen -W "status doctor kill gc" -- "$cur") )
+        return
+      fi
+      local appcmd="${COMP_WORDS[2]}"
+      case "$appcmd" in
+        status)
+          COMPREPLY=( $(compgen -W "--since --json" -- "$cur") )
+          ;;
+        doctor)
+          COMPREPLY=( $(compgen -W "--since --live --json" -- "$cur") )
+          ;;
+        kill)
+          COMPREPLY=( $(compgen -W "list stale --dry-run" -- "$cur") )
+          ;;
+        gc)
+          if [[ $COMP_CWORD -eq 3 ]]; then
+            COMPREPLY=( $(compgen -W "clean --dry-run --older-than-days --limit --json" -- "$cur") )
+          else
+            local gcaction="${COMP_WORDS[3]}"
+            case "$gcaction" in
+              clean)
+                COMPREPLY=( $(compgen -W "--action --category --path --older-than-days --dry-run --yes --force" -- "$cur") )
+                ;;
+              *)
+                COMPREPLY=( $(compgen -W "--dry-run --older-than-days --limit --json" -- "$cur") )
+                ;;
+            esac
+          fi
+          ;;
+      esac
       ;;
   esac
 }

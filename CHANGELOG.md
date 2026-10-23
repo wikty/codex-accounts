@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Default auth-only account switching no longer warns about SQLite locks or
+  prompts for confirmation while Codex is running. Full session isolation
+  retains the running-client confirmation.
+- Match Codex client process names exactly instead of treating any command
+  with `codex` in its arguments as a running client.
+
+### Added
+- `app status [--since HOURS] [--json]` subcommand: show a read-only,
+  offline summary of local Codex Desktop health signals, including
+  account/config/process/log and local thread-state checks. Top-level
+  `status` remains available as a shortcut.
+- `app doctor [--since HOURS] [--live] [--json]` subcommand: diagnose
+  Codex Desktop reconnect, WebSocket, TLS EOF, broken-pipe, timeout, and
+  proxy-route symptoms from local logs and runtime state. Live endpoint
+  probes are opt-in via `--live`.
+- `app kill [list|stale]` subcommand: list safe-to-identify Codex Desktop
+  background processes, or clean stale ones after ChatGPT/Codex has quit
+  (currently macOS desktop app only). The cleanup includes the background
+  service, bundled tool runtime, and Computer Use service when they are stale.
+- `app gc [--dry-run] [--json]` subcommand: classify large Codex home
+  storage into remove, rebuild, archive, and protected buckets. The default
+  report is read-only and does not delete files.
+- `app gc clean --category <name> --yes` cleanup path: delete selected
+  `remove` candidates after explicit confirmation. Protected, archive, and
+  rebuild buckets remain non-destructive.
+
 ## [0.2.0] - 2026-06-09
 
 ### Added

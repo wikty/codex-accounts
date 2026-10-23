@@ -35,6 +35,8 @@ _codex_switch() {
     'stats:local token usage from state_*.sqlite'
     'quota:live quota via private API (requires network)'
     'refresh:open the 5h window on every account'
+    'app:manage Codex Desktop runtime'
+    'status:fast local Codex health summary'
     'doctor:print environment diagnostics'
   )
 
@@ -75,6 +77,60 @@ _codex_switch() {
           _arguments \
             '--delay[seconds between accounts]:seconds:' \
             '--dry-run[show plan without sending]'
+          ;;
+        status)
+          _arguments \
+            '--since[hours of logs to scan]:hours:' \
+            '--json[emit machine-readable JSON]'
+          ;;
+        app)
+          local -a app_commands
+          app_commands=(
+            'status:fast local Codex health summary'
+            'doctor:diagnose Codex Desktop reconnect failures'
+            'kill:list or clean Codex Desktop background processes'
+            'gc:show Codex home cleanup candidates'
+          )
+          if [[ -z $line[2] ]]; then
+            _describe -t commands 'codex-accounts app command' app_commands
+          else
+            case $line[2] in
+              status)
+                _arguments \
+                  '--since[hours of logs to scan]:hours:' \
+                  '--json[emit machine-readable JSON]'
+                ;;
+              doctor)
+                _arguments \
+                  '--since[hours of logs to scan]:hours:' \
+                  '--live[run lightweight live HTTP probes]' \
+                  '--json[emit machine-readable JSON]'
+                ;;
+              kill)
+                _arguments \
+                  '--dry-run[show matching processes without terminating them]' \
+                  '1:action:(list stale)'
+                ;;
+              gc)
+                _arguments \
+                  '--dry-run[show candidates without changing files]' \
+                  '--older-than-days[minimum age for temp/cache candidates]:days:' \
+                  '--limit[items to show per bucket]:count:' \
+                  '--json[emit machine-readable JSON]' \
+                  '1:gc action:(clean)'
+                if [[ $line[3] == clean ]]; then
+                  _arguments \
+                    '--action[candidate action to clean]:action:(remove)' \
+                    '--category[exact remove-category name]:category:' \
+                    '--path[exact candidate path]:path:_files' \
+                    '--older-than-days[minimum age for temp/cache candidates]:days:' \
+                    '--dry-run[preview selected deletions]' \
+                    '--yes[confirm deletion]' \
+                    '--force[allow cleanup while Codex appears to be running]'
+                fi
+                ;;
+            esac
+          fi
           ;;
       esac
       ;;

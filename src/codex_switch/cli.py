@@ -8,7 +8,17 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timezone
 
-from codex_switch import __version__, accounts, api, config, stats, utils
+from codex_switch import (
+    __version__,
+    accounts,
+    api,
+    cleanup,
+    config,
+    processes,
+    stats,
+    status,
+    utils,
+)
 from codex_switch.accounts import Account, SwapMode
 
 PROG = "codex-accounts"
@@ -246,8 +256,9 @@ def cmd_use(args: argparse.Namespace) -> int:
     except ValueError as e:
         utils.die(str(e))
 
-    _confirm_codex_closed(force=args.force)
     mode = SwapMode.FULL if args.no_share_sessions else SwapMode.AUTH
+    if mode is SwapMode.FULL:
+        _confirm_codex_closed(force=args.force)
 
     current = accounts.current_name()
     if current and current != name:
@@ -516,9 +527,420 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_kill(args: argparse.Namespace) -> int:
+    """List or clean Codex Desktop background processes."""
+
+    if not processes.is_supported_platform():
+        msg = "kill is currently supported only for the macOS ChatGPT/Codex desktop app"
+        if args.action == "list":
+            utils.echo(msg)
+            return 0
+        utils.warn(msg)
+        return 1
+
+    if args.action == "list":
+        _print_stale_processes(processes.list_stale_processes())
+        return 0
+
+    if args.dry_run:
+        _print_stale_processes(processes.list_stale_processes())
+        utils.echo(utils.dim("dry-run: no processes were signaled"))
+        return 0
+
+    try:
+        result = processes.terminate_stale_processes()
+    except processes.UnsupportedPlatform as e:
+        utils.warn(str(e))
+        return 1
+    except processes.ChatGPTStillRunning:
+        utils.warn("ChatGPT/Codex is still running; quit it before cleaning stale processes.")
+        _print_stale_processes(processes.list_stale_processes())
+        return 1
+
+    if not result.found:
+        utils.echo("no Codex Desktop background processes found")
+        return 0
+
+    for proc in result.signaled:
+        utils.ok(f"signaled {proc.kind} pid={proc.pid}")
+    for proc in result.missing:
+        utils.echo(utils.dim(f"already gone {proc.kind} pid={proc.pid}"))
+    for proc, err in result.failed:
+        utils.warn(f"could not signal {proc.kind} pid={proc.pid}: {err}")
+
+    if result.remaining:
+        utils.warn("some Codex Desktop background processes are still running:")
+        _print_stale_processes(result.remaining)
+        return 1
+
+    utils.ok("no Codex Desktop background processes remain")
+    return 0
+
+
+def _print_stale_processes(rows: list[processes.CodexProcess]) -> None:
+    if not rows:
+        utils.echo("no Codex Desktop background processes found")
+        return
+
+    utils.echo("\nCodex Desktop background processes:")
+    utils.echo(utils.dim("  pid      ppid     cpu    mem    kind"))
+    utils.echo(utils.dim("  " + "-" * 52))
+    for proc in rows:
+        utils.echo(f"  {proc.pid:<8} {proc.ppid:<8} {proc.cpu:<6} {proc.mem:<6} {proc.kind}")
+    utils.echo("")
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    """Fast local Codex health summary."""
+
+    report = status.collect_status(since_hours=args.since)
+    if args.json:
+        utils.echo(status.dumps_json(report))
+        return 0 if report.verdict != "ACTION" else 1
+
+    utils.echo(f"\nCodex Status  {utils.bold(report.verdict)}")
+    utils.echo("─" * 56)
+    account = report.account
+    account_name = account.name or "(none)"
+    utils.echo(f"  account    {account_name} · {account.email} · {account.token}")
+    cfg = report.config
+    utils.echo(
+        f"  config     {cfg.model} / {cfg.effort} · agents "
+        f"{cfg.agents_max_threads}x depth {cfg.agents_max_depth} · "
+        f"global AGENTS {status.format_bytes(cfg.global_agents_bytes)}"
+    )
+    utils.echo(
+        f"  mcp        enabled={cfg.mcp_enabled} disabled={cfg.mcp_disabled} "
+        f"remote={cfg.mcp_remote} · plugins={cfg.plugins_enabled}"
+    )
+    proc = report.processes
+    process_summary = ", ".join(f"{name}={count}" for name, count in sorted(proc.counts.items()))
+    if not process_summary:
+        process_summary = "none"
+    platform = "macOS" if proc.supported else "unsupported platform"
+    running = "running" if proc.chatgpt_running else "not running"
+    utils.echo(f"  processes  {platform} · ChatGPT {running} · {process_summary}")
+    logs = report.logs
+    readable = "" if logs.readable else " · unreadable"
+    utils.echo(
+        f"  logs {logs.since_hours}h  remote_control={logs.remote_control_warnings} "
+        f"responses_retry={logs.responses_retry} mcp_warnings={logs.mcp_warnings} "
+        f"plugin_warnings={logs.plugin_warnings} rollout_warnings={logs.rollout_warnings}"
+        f"{readable}"
+    )
+    state = report.state
+    active = "?" if state.active_threads is None else f"{state.active_threads:,}"
+    archived = "?" if state.archived_threads is None else f"{state.archived_threads:,}"
+    subagents = "?" if state.subagent_threads_7d is None else f"{state.subagent_threads_7d:,}"
+    utils.echo(
+        f"  state      active={active} archived={archived} "
+        f"active_rollouts={status.format_bytes(state.active_rollout_bytes)} "
+        f"subagents_7d={subagents}"
+    )
+    if report.reasons:
+        utils.echo("\n  signals")
+        for reason in report.reasons[:8]:
+            utils.echo(f"    - {reason}")
+    utils.echo("")
+    return 0 if report.verdict != "ACTION" else 1
+
+
+def cmd_app_doctor(args: argparse.Namespace) -> int:
+    """Diagnose Codex Desktop reconnect and streaming failures."""
+
+    report = status.collect_reconnect_diagnosis(since_hours=args.since, live=args.live)
+    if args.json:
+        utils.echo(status.dumps_reconnect_json(report))
+        return 0 if report.verdict != "ACTION" else 1
+
+    utils.echo(f"\nCodex Reconnect Doctor  {utils.bold(report.verdict)}")
+    utils.echo("─" * 56)
+    logs = report.logs
+    readable = "" if logs.readable else " · unreadable"
+    utils.echo(
+        f"  logs {logs.since_hours}h  tls_eof={logs.tls_handshake_eof} "
+        f"broken_pipe={logs.broken_pipe} timeouts={logs.request_timeouts} "
+        f"stream_disconnect={logs.stream_disconnected} retry={logs.responses_retry} "
+        f"websocket={logs.websocket_errors}{readable}"
+    )
+    utils.echo(
+        f"  remote     remote_control={logs.remote_control_failures} "
+        f"mcp_http={logs.mcp_http_failures} plugins={logs.plugin_catalog_failures} "
+        f"models={logs.model_refresh_failures}"
+    )
+
+    net = report.network
+    proxy_apps = ", ".join(net.proxy_apps) if net.proxy_apps else "none"
+    network_label = "macOS" if net.supported else "unsupported platform"
+    utils.echo(
+        f"  network    {network_label} · PAC={'on' if net.pac_enabled else 'off'} "
+        f"HTTP={'on' if net.http_proxy_enabled else 'off'} "
+        f"HTTPS={'on' if net.https_proxy_enabled else 'off'} "
+        f"SOCKS={'on' if net.socks_proxy_enabled else 'off'} · "
+        f"utun_routes={net.tun_routes} · proxy_apps={proxy_apps}"
+    )
+    if net.pac_url:
+        utils.echo(f"             PAC URL: {net.pac_url}")
+    if net.problem:
+        utils.echo(f"             {net.problem}")
+
+    proc = report.processes
+    process_summary = ", ".join(f"{name}={count}" for name, count in sorted(proc.counts.items()))
+    if not process_summary:
+        process_summary = "none"
+    running = "running" if proc.chatgpt_running else "not running"
+    utils.echo(f"  processes  ChatGPT {running} · {process_summary}")
+
+    if report.probes:
+        utils.echo("\n  live probes")
+        for probe in report.probes:
+            marker = "ok" if probe.ok else "fail"
+            notes = f" · {', '.join(probe.notes)}" if probe.notes else ""
+            utils.echo(f"    - {marker:<4} {probe.url} · {probe.status}{notes}")
+    elif not args.live:
+        utils.echo(utils.dim("  live probe skipped; add --live to test OpenAI endpoints"))
+
+    if report.reasons:
+        utils.echo("\n  likely signals")
+        for reason in report.reasons[:8]:
+            utils.echo(f"    - {reason}")
+    if report.next_steps:
+        utils.echo("\n  next steps")
+        for step in report.next_steps[:6]:
+            utils.echo(f"    - {step}")
+    if report.samples:
+        utils.echo("\n  recent samples (sanitized)")
+        for sample in report.samples:
+            utils.echo(f"    - {sample.level} {sample.target}: {sample.body}")
+    utils.echo("")
+    return 0 if report.verdict != "ACTION" else 1
+
+
+def cmd_gc(args: argparse.Namespace) -> int:
+    """Show read-only Codex home cleanup candidates."""
+
+    report = cleanup.collect_cleanup_report(older_than_days=args.older_than_days)
+    if args.json:
+        utils.echo(cleanup.dumps_json(report))
+        return 0
+
+    utils.echo(f"\nCodex App GC  {utils.bold('DRY-RUN')}")
+    utils.echo("─" * 56)
+    utils.echo(f"  home       {report.codex_home}")
+    utils.echo(f"  age gate   {report.older_than_days}d for temp/cache candidates")
+    utils.echo(
+        f"  candidates {status.format_bytes(cleanup.total_candidate_bytes(report))} "
+        "(remove/rebuild only)"
+    )
+
+    by_action: dict[str, list[cleanup.CleanupItem]] = {}
+    for item in report.items:
+        by_action.setdefault(item.action, []).append(item)
+
+    labels = {
+        "remove": "remove candidates",
+        "rebuild": "rebuildable caches",
+        "archive": "archive candidates",
+        "protect": "protected state",
+    }
+    for action in ("remove", "rebuild", "archive", "protect"):
+        rows = by_action.get(action, [])
+        if not rows:
+            continue
+        utils.echo(f"\n  {labels[action]}")
+        for item in sorted(rows, key=lambda row: row.bytes, reverse=True)[: args.limit]:
+            count = f" · files={item.count}" if item.count != 1 else ""
+            utils.echo(
+                f"    - {status.format_bytes(item.bytes):>8} · {item.risk:<6} · "
+                f"{item.category}{count}"
+            )
+            utils.echo(f"      {item.path}")
+            utils.echo(utils.dim(f"      {item.reason}"))
+        if len(rows) > args.limit:
+            utils.echo(utils.dim(f"      ... {len(rows) - args.limit} more"))
+
+    if report.notes:
+        utils.echo("\n  notes")
+        for note in report.notes:
+            utils.echo(f"    - {note}")
+    utils.echo("\n  dry-run only: no files were changed\n")
+    return 0
+
+
+def cmd_gc_clean(args: argparse.Namespace) -> int:
+    """Clean selected Codex home remove candidates."""
+
+    categories = args.category or []
+    paths = args.path or []
+    if not categories and not paths:
+        utils.die("choose at least one --category or --path from `codex-accounts app gc`")
+    if args.action != "remove":
+        utils.die("only --action remove is currently supported")
+    if not args.dry_run and not args.yes:
+        utils.die("refusing to delete without --yes; use --dry-run to preview")
+    if not args.dry_run and not args.force and utils.is_codex_running():
+        utils.die("ChatGPT/Codex is running; quit it first or pass --force")
+
+    result = cleanup.clean_candidates(
+        older_than_days=args.older_than_days,
+        categories=categories,
+        paths=paths,
+        dry_run=args.dry_run,
+    )
+    if not result.matched:
+        utils.echo("no matching remove candidates found")
+        return 0
+
+    mode = "DRY-RUN" if result.dry_run else "CLEAN"
+    utils.echo(f"\nCodex App GC {utils.bold(mode)}")
+    utils.echo("─" * 56)
+    utils.echo(
+        f"  matched    {len(result.matched)} item(s), {status.format_bytes(result.matched_bytes)}"
+    )
+
+    if result.dry_run:
+        for item in result.matched:
+            utils.echo(f"  would remove {status.format_bytes(item.bytes):>8} · {item.category}")
+            utils.echo(f"    {item.path}")
+        utils.echo("\n  dry-run only: no files were changed\n")
+        return 0
+
+    for item in result.deleted:
+        utils.ok(f"removed {item.category}: {item.path}")
+    for item in result.missing:
+        utils.echo(utils.dim(f"already gone {item.category}: {item.path}"))
+    for item, err in result.failed:
+        utils.warn(f"failed {item.category}: {item.path}: {err}")
+
+    utils.echo(
+        f"\n  removed    {len(result.deleted)} item(s), {status.format_bytes(result.deleted_bytes)}"
+    )
+    if result.failed:
+        return 1
+    utils.echo("")
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # Parser construction
 # ---------------------------------------------------------------------------
+
+
+def _add_status_parser(subparsers: argparse._SubParsersAction) -> None:
+    sp = subparsers.add_parser(
+        "status",
+        help="fast local Codex health summary",
+        description="Show a read-only, offline summary of local Codex health signals.",
+    )
+    sp.add_argument("--since", type=int, default=24, help="hours of logs to scan (default: 24)")
+    sp.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    sp.set_defaults(func=cmd_status)
+
+
+def _add_app_doctor_parser(subparsers: argparse._SubParsersAction) -> None:
+    sp = subparsers.add_parser(
+        "doctor",
+        help="diagnose Codex Desktop reconnect failures",
+        description=(
+            "Diagnose Codex Desktop reconnect, WebSocket, TLS EOF, broken-pipe, "
+            "and timeout failures from local logs and runtime state. Network probes "
+            "run only when --live is passed."
+        ),
+    )
+    sp.add_argument("--since", type=int, default=1, help="hours of logs to scan (default: 1)")
+    sp.add_argument("--live", action="store_true", help="run lightweight live HTTP probes")
+    sp.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    sp.set_defaults(func=cmd_app_doctor)
+
+
+def _add_kill_parser(subparsers: argparse._SubParsersAction) -> None:
+    sp = subparsers.add_parser(
+        "kill",
+        help="list or clean Codex Desktop background processes",
+        description=(
+            "List Codex Desktop background processes, or clean stale processes "
+            "after ChatGPT/Codex has quit. Currently supports the macOS desktop app."
+        ),
+    )
+    sp.add_argument(
+        "action",
+        nargs="?",
+        choices=("list", "stale"),
+        default="list",
+        help="list background processes or clean stale ones (default: list)",
+    )
+    sp.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="show matching processes without terminating them",
+    )
+    sp.set_defaults(func=cmd_kill)
+
+
+def _add_gc_parser(subparsers: argparse._SubParsersAction) -> None:
+    sp = subparsers.add_parser(
+        "gc",
+        help="show Codex home cleanup candidates",
+        description=(
+            "Classify large Codex home storage into remove, rebuild, archive, "
+            "and protected buckets. Use `gc clean` for explicit remove-candidate cleanup."
+        ),
+    )
+    sp.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=True,
+        help="accepted for clarity; gc is currently always read-only",
+    )
+    sp.add_argument(
+        "--older-than-days",
+        type=int,
+        default=7,
+        help="minimum age for temp/cache candidates (default: 7)",
+    )
+    sp.add_argument("--limit", type=int, default=12, help="items to show per bucket (default: 12)")
+    sp.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    sp.set_defaults(func=cmd_gc)
+
+    gc_sub = sp.add_subparsers(dest="gc_command", metavar="<gc-command>")
+    clean_sp = gc_sub.add_parser(
+        "clean",
+        help="delete selected remove candidates",
+        description=(
+            "Delete selected items that currently appear in the remove bucket. "
+            "Archive, rebuild, and protected buckets are never deleted by this command."
+        ),
+    )
+    clean_sp.add_argument(
+        "--action",
+        choices=("remove",),
+        default="remove",
+        help="candidate action to clean (default: remove)",
+    )
+    clean_sp.add_argument(
+        "--category",
+        action="append",
+        help="remove candidates from this exact category; may be repeated",
+    )
+    clean_sp.add_argument(
+        "--path",
+        action="append",
+        help="remove this exact path when it appears in the current remove bucket",
+    )
+    clean_sp.add_argument(
+        "--older-than-days",
+        type=int,
+        default=7,
+        help="minimum age for temp/cache candidates (default: 7)",
+    )
+    clean_sp.add_argument("--dry-run", action="store_true", help="preview selected deletions")
+    clean_sp.add_argument("--yes", action="store_true", help="confirm deletion")
+    clean_sp.add_argument(
+        "--force",
+        action="store_true",
+        help="allow cleanup while ChatGPT/Codex appears to be running",
+    )
+    clean_sp.set_defaults(func=cmd_gc_clean)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -561,7 +983,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="full isolation: also swap session DBs and history",
     )
-    sp.add_argument("-f", "--force", action="store_true", help="skip the 'is Codex running?' check")
+    sp.add_argument(
+        "-f",
+        "--force",
+        action="store_true",
+        help="skip the running-client confirmation for --no-share-sessions",
+    )
     sp.set_defaults(func=cmd_use)
 
     sp = sub.add_parser("init", help="create an empty account snapshot directory")
@@ -626,6 +1053,22 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("doctor", help="print environment diagnostics for bug reports")
     sp.set_defaults(func=cmd_doctor)
 
+    # Runtime/app commands live under `app`; top-level `status` remains a
+    # short alias because it is a frequent read-only check.
+    sp = sub.add_parser(
+        "app",
+        help="manage Codex Desktop runtime",
+        description="Inspect and manage local Codex Desktop runtime state.",
+    )
+    app_sub = sp.add_subparsers(dest="app_command", metavar="<app-command>")
+    app_sub.required = True
+    _add_status_parser(app_sub)
+    _add_app_doctor_parser(app_sub)
+    _add_kill_parser(app_sub)
+    _add_gc_parser(app_sub)
+
+    _add_status_parser(sub)
+
     return p
 
 
@@ -635,6 +1078,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
+    if argv and argv[0] == "kill":
+        argv = ["app", *argv]
+
     parser = build_parser()
     args = parser.parse_args(argv)
     try:

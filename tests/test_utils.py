@@ -3,12 +3,49 @@
 from __future__ import annotations
 
 import json
+import re
+import subprocess
 from datetime import date
 
 import pytest
 
 from codex_switch import utils
 from tests.conftest import _make_jwt
+
+
+@pytest.mark.parametrize(
+    "macos,process_name,arguments,expected",
+    [
+        (True, "Codex", "", True),
+        (True, "ChatGPT", "", True),
+        (True, "codex", "app-server", True),
+        (True, "uv", "--auth /Users/shaw/.codex/auth.json", False),
+        (True, "python3.11", "codex-accounts use work", False),
+        (False, "codex", "", True),
+        (False, "python3", "--auth /home/user/.codex/auth.json", False),
+    ],
+)
+def test_running_detection_matches_client_names(
+    monkeypatch,
+    macos,
+    process_name,
+    arguments,
+    expected,
+):
+    monkeypatch.setattr(utils.config, "IS_MACOS", macos)
+    monkeypatch.setattr(utils.config, "IS_LINUX", not macos)
+    monkeypatch.setattr(utils.shutil, "which", lambda _: "/usr/bin/pgrep")
+
+    def run(args, **kwargs):
+        # Model pgrep's name-vs-command matching so path arguments cannot
+        # accidentally turn a non-client process into a running client.
+        candidate = process_name if "-f" not in args else f"{process_name} {arguments}"
+        match = (re.fullmatch if "-x" in args else re.search)(args[-1], candidate)
+        return subprocess.CompletedProcess(args, 0 if match else 1, b"123\n" if match else b"")
+
+    monkeypatch.setattr(utils.subprocess, "run", run)
+
+    assert utils.is_codex_running() is expected
 
 
 @pytest.mark.parametrize(

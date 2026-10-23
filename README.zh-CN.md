@@ -100,6 +100,12 @@ codex-accounts stats              # 本地 token 用量
 | `stats [name]` | 读取本地 SQLite 的 token 用量 |
 | `quota [name]` | 通过私有 API 查询实时额度（需联网） |
 | `refresh` | 批量为每个账号打开 5h 窗口（适合定时任务） |
+| `app status [--since HOURS] [--json]` | 快速查看本机 Codex Desktop 基础健康状态 |
+| `app doctor [--since HOURS] [--live] [--json]` | 诊断 Codex Desktop 重连、WebSocket、TLS 超时类问题 |
+| `app kill [list\|stale]` | 查看 Codex Desktop 后台进程，或在退出后清理残留（仅 macOS 桌面端） |
+| `app gc [--dry-run] [--json]` | 把 Codex home 大文件分类为可移除、可重建、可归档、受保护 |
+| `app gc clean --category <name> --yes` | 显式确认后删除选中的 `remove` 候选 |
+| `status [--since HOURS] [--json]` | `app status` 的快捷入口 |
 | `doctor` | 输出运行环境诊断信息 |
 
 ## 工作原理
@@ -115,10 +121,17 @@ codex-accounts stats              # 本地 token 用量
 ```
 
 - **AUTH 模式**（`use` 默认）：仅互换 `auth.json`。会话历史所有账号共享，
-  这是绝大多数用户想要的。
+  这是绝大多数用户想要的。此模式不再提示关闭 Codex 或要求继续确认；
+  如果已运行的客户端仍使用旧账号，重启客户端后再使用。
 - **FULL 模式**（`use --no-share-sessions`）：会话 DB、日志 DB、JSONL 索引、
   `sessions/`/`archived_sessions/`/`shell_snapshots/` 目录、全局 UI 状态
   文件全部互换。当你真的想让每个账号有独立会话栏时使用。
+  此模式会替换 SQLite 文件，因此检测到 Codex 运行时仍要求继续确认。
+
+`app gc` 默认只读。它只报告临时残留、可重建缓存、适合压缩归档的历史产物，
+以及必须保护的运行状态。`app gc clean` 只会删除当前 `remove` bucket 里的
+候选项，并且必须显式指定 `--category` 或 `--path`，再加 `--yes` 确认；
+不会删除 rollout 历史、认证/配置文件、SQLite 索引或生成图片。
 
 具体文件列表见
 [`src/codex_switch/config.py`](./src/codex_switch/config.py)；

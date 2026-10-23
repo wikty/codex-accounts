@@ -116,6 +116,12 @@ See [docs/add-account.md](./docs/add-account.md) for a full walkthrough.
 | `stats [name]` | Token usage from local SQLite |
 | `quota [name]` | Live quota via private API (requires network) |
 | `refresh` | Open the 5h window on every account (cron-friendly) |
+| `app status [--since HOURS] [--json]` | Fast local Codex Desktop health summary |
+| `app doctor [--since HOURS] [--live] [--json]` | Diagnose Codex Desktop reconnect/WebSocket/TLS timeout issues |
+| `app kill [list\|stale]` | List Codex Desktop background processes or clean stale ones (macOS desktop only) |
+| `app gc [--dry-run] [--json]` | Classify large Codex home files into remove/rebuild/archive/protected buckets |
+| `app gc clean --category <name> --yes` | Delete selected `remove` candidates after explicit confirmation |
+| `status [--since HOURS] [--json]` | Shortcut for `app status` |
 | `doctor` | Environment dump for bug reports |
 
 Run `codex-accounts <cmd> --help` for command-specific options.
@@ -134,11 +140,20 @@ Run `codex-accounts <cmd> --help` for command-specific options.
 
 - **AUTH mode** (default for `use`) — only `auth.json` is swapped. Sessions
   and history live in `~/.codex/` and are visible from every account. This
-  is what most people want.
+  is what most people want. This mode does not prompt you to close Codex.
+  Restart an already-running client if it continues to use the previous account.
 - **FULL mode** (`use --no-share-sessions`) — session DBs, log DBs, JSONL
   index, the `sessions/`/`archived_sessions/`/`shell_snapshots/`
   directories, and the global UI state file are all swapped. Use this when
-  you genuinely want separate session sidebars per account.
+  you genuinely want separate session sidebars per account. This mode still
+  asks for confirmation when Codex is running because it replaces SQLite files.
+
+`app gc` is read-only by default. It reports likely temporary leftovers,
+rebuildable caches, archived artifacts worth compressing, and protected live
+state. `app gc clean` only deletes items that appear in the current `remove`
+bucket, and requires an exact `--category` or `--path` plus `--yes`. It does
+not delete rollout history, auth/config files, SQLite indexes, or generated
+images.
 
 The exact file list lives in
 [`src/codex_switch/config.py`](./src/codex_switch/config.py) and uses

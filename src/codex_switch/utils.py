@@ -330,9 +330,9 @@ def is_codex_running() -> bool:
     Falls back to ``False`` on platforms where we cannot tell.
     """
     if config.IS_MACOS:
-        return _pgrep("Codex", exact=True) or _pgrep("codex", exact=False)
+        return _pgrep("Codex|codex|ChatGPT", exact=True)
     if config.IS_LINUX:
-        return _pgrep("codex", exact=False)
+        return _pgrep("codex", exact=True)
     return False
 
 
